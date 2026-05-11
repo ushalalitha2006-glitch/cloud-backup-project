@@ -59,28 +59,27 @@ app.get('/', (req, res) => {
 // --------------------
 // MANUAL BACKUP
 // --------------------
-app.post('/backup', (req, res) => {
+app.post('/backup', async (req, res) => {
 
-  exec('node src/backup.js', (error, stdout, stderr) => {
+  try {
 
-    if (error) {
-      return res.status(500).json({
-        error: error.message
-      });
-    }
+    const backupModule = require('./backup');
 
-    if (stderr) {
-      return res.status(500).json({
-        error: stderr
-      });
-    }
+    await backupModule.runBackup();
 
     res.json({
-      message: 'Backup completed',
-      output: stdout
+      message: 'Backup completed successfully'
     });
 
-  });
+  } catch (err) {
+
+    console.log(err);
+
+    res.status(500).json({
+      error: err.message
+    });
+
+  }
 
 });
 

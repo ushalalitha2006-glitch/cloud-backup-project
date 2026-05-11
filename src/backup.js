@@ -1,95 +1,124 @@
-require('dotenv').config();
+if (process.env.NODE_ENV !== 'production') {
+  require('dotenv').config();
+}
 
 const { createClient } = require('@supabase/supabase-js');
-const { Client } = require('pg');
-const fs = require('fs-extra');
+
+const fs = require('fs');
+
 const crypto = require('crypto');
+
+const { Client } = require('pg');
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_KEY
 );
 
-const client = new Client({
+// --------------------
+// DATABASE
+// --------------------
+const dbClient = new Client({
   host: process.env.DB_HOST,
   port: process.env.DB_PORT,
   database: process.env.DB_NAME,
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
+  ssl: {
+    rejectUnauthorized: false
+  }
 });
 
-// FIX: make sure key is 32 bytes
-function getKey() {
-  return crypto
-    .createHash('sha256')
-    .update(process.env.ENCRYPTION_KEY)
-    .digest();
-}
+// --------------------
+// BACKUP FUNCTION
+// --------------------
+async function runBackup() {
 
-async function backupDatabase() {
   try {
-    await client.connect();
 
-    // STEP 1: Fetch data
-    const result = await client.query('SELECT * FROM notes');
+    await dbClient.connect();
 
-    const backupData = JSON.stringify(result.rows, null, 2);
+    // GET DATA
+    const result = await dbClient.query(
+      'SELECT * FROM notes'
+    );
 
-    // STEP 2: Create versioned filename
-    const filename = `backup-${Date.now()}.txt`;
+    const data = JSON.stringify(result.rows);
 
-    // STEP 3: Encrypt data (AES-256-CBC)
+    // ENCRYPTION
     const iv = crypto.randomBytes(16);
+
+    const key = crypto
+      .createHash('sha256')
+      .update(process.env.ENCRYPTION_KEY)
+      .digest();
 
     const cipher = crypto.createCipheriv(
       'aes-256-cbc',
-      getKey(),
+      key,
       iv
     );
 
-    let encrypted = cipher.update(backupData, 'utf8', 'hex');
+    let encrypted = cipher.update(
+      data,
+      'utf8',
+      'hex'
+    );
+
     encrypted += cipher.final('hex');
 
-    // store IV with data (needed for restore)
-    const finalData = iv.toString('hex') + ':' + encrypted;
+    const finalEncryptedData =
+      iv.toString('hex') + ':' + encrypted;
 
-    // STEP 4: Save locally (optional)
-    await fs.writeFile(filename, finalData);
+    // UNIQUE FILE NAME
+    const fileName =
+      `backup-${Date.now()}.txt`;
 
-    console.log('Encrypted backup created');
+    // SAVE TEMP FILE
+    fs.writeFileSync(
+      fileName,
+      finalEncryptedData
+    );
 
-    // STEP 5: Upload to Supabase Storage
-    const fileBuffer = await fs.readFile(filename);
+    // UPLOAD TO SUPABASE STORAGE
+    const fileBuffer = fs.readFileSync(fileName);
 
     const { error } = await supabase.storage
       .from('backups')
-      .upload(filename, fileBuffer);
+      .upload(fileName, fileBuffer, {
+        contentType: 'text/plain',
+        upsert: false
+      });
 
-    // STEP 6: Log result in DB
     if (error) {
-      console.log('Upload failed:', error.message);
-
-      await client.query(
-        'INSERT INTO backup_logs(filename, status) VALUES($1, $2)',
-        [filename, 'FAILED']
-      );
-    } else {
-      console.log('Backup uploaded successfully');
-
-      await client.query(
-        'INSERT INTO backup_logs(filename, status) VALUES($1, $2)',
-        [filename, 'SUCCESS']
-      );
+      throw error;
     }
 
-    // STEP 7: Cleanup local file
-    await fs.remove(filename);
+    // SAVE LOG
+    await dbClient.query(
+      `
+      INSERT INTO backup_logs(filename, status)
+      VALUES($1, $2)
+      `,
+      [fileName, 'SUCCESS']
+    );
 
-    await client.end();
+    // DELETE LOCAL TEMP FILE
+    fs.unlinkSync(fileName);
+
+    console.log('Backup uploaded successfully');
 
   } catch (err) {
-    console.log('Backup error:', err.message);
+
+    console.log(err);
+
+    throw err;
+
   }
+
 }
 
-backupDatabase();
+// EXPORT
+module.exports = {
+  runBackup
+};
