@@ -1,17 +1,31 @@
-const cors = require('cors');
-require('dotenv').config();
-
+if (process.env.NODE_ENV !== 'production') {
+  require('dotenv').config();
+}
 
 const express = require('express');
 const { exec } = require('child_process');
 const { Client } = require('pg');
+const axios = require('axios');
+const crypto = require('crypto');
 
 const app = express();
-app.use(cors());
+
 app.use(express.json());
 
+console.log("DB HOST:", process.env.DB_HOST);
+
 // --------------------
-// POSTGRESQL
+// SUPABASE
+// --------------------
+const { createClient } = require('@supabase/supabase-js');
+
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_KEY
+);
+
+// --------------------
+// POSTGRES CONNECTION
 // --------------------
 const dbClient = new Client({
   host: process.env.DB_HOST,
@@ -19,9 +33,19 @@ const dbClient = new Client({
   database: process.env.DB_NAME,
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
+  ssl: {
+    rejectUnauthorized: false
+  }
 });
 
-dbClient.connect();
+// CONNECT DATABASE
+dbClient.connect()
+  .then(() => {
+    console.log("Database connected successfully");
+  })
+  .catch((err) => {
+    console.error("Database connection failed:", err);
+  });
 
 
 // --------------------
@@ -33,11 +57,11 @@ app.get('/', (req, res) => {
 
 
 // --------------------
-// BACKUP ROUTE
+// MANUAL BACKUP
 // --------------------
 app.post('/backup', (req, res) => {
 
-  exec('node ./src/backup.js', (error, stdout, stderr) => {
+  exec('node src/backup.js', (error, stdout, stderr) => {
 
     if (error) {
       return res.status(500).json({
@@ -62,7 +86,7 @@ app.post('/backup', (req, res) => {
 
 
 // --------------------
-// LOGS ROUTE
+// VIEW LOGS
 // --------------------
 app.get('/logs', async (req, res) => {
 
@@ -86,11 +110,83 @@ app.get('/logs', async (req, res) => {
 
 
 // --------------------
-// RESTORE ROUTE
+// RESTORE BACKUP
 // --------------------
-const restoreBackup = require('./restore');
+app.post('/restore', async (req, res) => {
 
-app.post('/restore', restoreBackup);
+  try {
+
+    const { filename } = req.body;
+
+    if (!filename) {
+      return res.status(400).json({
+        error: 'filename is required'
+      });
+    }
+
+    // GET PUBLIC URL
+    const { data } = supabase.storage
+      .from('backups')
+      .getPublicUrl(filename);
+
+    const fileUrl = data.publicUrl;
+
+    // DOWNLOAD FILE
+    const response = await axios.get(fileUrl);
+
+    const encryptedData = response.data;
+
+    // SPLIT IV + DATA
+    const [ivHex, encrypted] = encryptedData.split(':');
+
+    // CREATE KEY
+    const key = crypto
+      .createHash('sha256')
+      .update(process.env.ENCRYPTION_KEY)
+      .digest();
+
+    // DECRYPT
+    const decipher = crypto.createDecipheriv(
+      'aes-256-cbc',
+      key,
+      Buffer.from(ivHex, 'hex')
+    );
+
+    let decrypted = decipher.update(
+      encrypted,
+      'hex',
+      'utf8'
+    );
+
+    decrypted += decipher.final('utf8');
+
+    // PARSE JSON
+    const records = JSON.parse(decrypted);
+
+    // INSERT INTO DATABASE
+    for (const row of records) {
+
+      await dbClient.query(
+        'INSERT INTO notes(title, content) VALUES($1, $2)',
+        [row.title, row.content]
+      );
+
+    }
+
+    res.json({
+      message: 'Restore completed successfully',
+      restoredRows: records.length
+    });
+
+  } catch (err) {
+
+    res.status(500).json({
+      error: err.message
+    });
+
+  }
+
+});
 
 
 // --------------------
