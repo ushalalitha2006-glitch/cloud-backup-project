@@ -3,16 +3,16 @@ if (process.env.NODE_ENV !== 'production') {
 }
 
 const express = require('express');
-const { exec } = require('child_process');
-const { Client } = require('pg');
+const cors = require('cors');
 const axios = require('axios');
 const crypto = require('crypto');
+const { Client } = require('pg');
 
 const app = express();
 
-app.use(express.json());
+app.use(cors());
 
-console.log("DB HOST:", process.env.DB_HOST);
+app.use(express.json());
 
 // --------------------
 // SUPABASE
@@ -25,7 +25,7 @@ const supabase = createClient(
 );
 
 // --------------------
-// POSTGRES CONNECTION
+// DATABASE
 // --------------------
 const dbClient = new Client({
   host: process.env.DB_HOST,
@@ -41,23 +41,25 @@ const dbClient = new Client({
 // CONNECT DATABASE
 dbClient.connect()
   .then(() => {
-    console.log("Database connected successfully");
+    console.log('Database connected successfully');
   })
   .catch((err) => {
-    console.error("Database connection failed:", err);
+    console.log(err);
   });
 
 
 // --------------------
-// HOME ROUTE
+// HOME
 // --------------------
 app.get('/', (req, res) => {
+
   res.send('Cloud Backup System API is running 🚀');
+
 });
 
 
 // --------------------
-// MANUAL BACKUP
+// BACKUP
 // --------------------
 app.post('/backup', async (req, res) => {
 
@@ -85,7 +87,7 @@ app.post('/backup', async (req, res) => {
 
 
 // --------------------
-// VIEW LOGS
+// LOGS
 // --------------------
 app.get('/logs', async (req, res) => {
 
@@ -109,7 +111,7 @@ app.get('/logs', async (req, res) => {
 
 
 // --------------------
-// RESTORE BACKUP
+// RESTORE
 // --------------------
 app.post('/restore', async (req, res) => {
 
@@ -118,12 +120,14 @@ app.post('/restore', async (req, res) => {
     const { filename } = req.body;
 
     if (!filename) {
+
       return res.status(400).json({
         error: 'filename is required'
       });
+
     }
 
-    // GET PUBLIC URL
+    // GET FILE URL
     const { data } = supabase.storage
       .from('backups')
       .getPublicUrl(filename);
@@ -135,8 +139,9 @@ app.post('/restore', async (req, res) => {
 
     const encryptedData = response.data;
 
-    // SPLIT IV + DATA
-    const [ivHex, encrypted] = encryptedData.split(':');
+    // SPLIT IV + ENCRYPTED DATA
+    const [ivHex, encrypted] =
+      encryptedData.split(':');
 
     // CREATE KEY
     const key = crypto
@@ -162,7 +167,7 @@ app.post('/restore', async (req, res) => {
     // PARSE JSON
     const records = JSON.parse(decrypted);
 
-    // INSERT INTO DATABASE
+    // INSERT DATA
     for (const row of records) {
 
       await dbClient.query(
@@ -179,6 +184,8 @@ app.post('/restore', async (req, res) => {
 
   } catch (err) {
 
+    console.log(err);
+
     res.status(500).json({
       error: err.message
     });
@@ -194,5 +201,7 @@ app.post('/restore', async (req, res) => {
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
+
   console.log(`Server running on http://localhost:${PORT}`);
+
 });
