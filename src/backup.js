@@ -3,13 +3,13 @@ if (process.env.NODE_ENV !== 'production') {
 }
 
 const { createClient } = require('@supabase/supabase-js');
-
 const fs = require('fs');
-
 const crypto = require('crypto');
-
 const { Client } = require('pg');
 
+// --------------------
+// SUPABASE
+// --------------------
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_KEY
@@ -36,16 +36,21 @@ async function runBackup() {
 
   try {
 
+    // CONNECT DB
     await dbClient.connect();
+
+    console.log("DB connected");
 
     // GET DATA
     const result = await dbClient.query(
       'SELECT * FROM notes'
     );
 
+    console.log("Fetched notes");
+
     const data = JSON.stringify(result.rows);
 
-    // ENCRYPTION
+    // ENCRYPT
     const iv = crypto.randomBytes(16);
 
     const key = crypto
@@ -70,19 +75,25 @@ async function runBackup() {
     const finalEncryptedData =
       iv.toString('hex') + ':' + encrypted;
 
-    // UNIQUE FILE NAME
+    console.log("Encryption complete");
+
+    // FILE NAME
     const fileName =
       `backup-${Date.now()}.txt`;
 
-    // SAVE TEMP FILE
+    // SAVE FILE
     fs.writeFileSync(
       fileName,
       finalEncryptedData
     );
 
-    // UPLOAD TO SUPABASE STORAGE
-    const fileBuffer = fs.readFileSync(fileName);
+    console.log("File saved locally");
 
+    // READ FILE
+    const fileBuffer =
+      fs.readFileSync(fileName);
+
+    // UPLOAD
     const { error } = await supabase.storage
       .from('backups')
       .upload(fileName, fileBuffer, {
@@ -91,8 +102,14 @@ async function runBackup() {
       });
 
     if (error) {
+
+      console.log(error);
+
       throw error;
+
     }
+
+    console.log("Uploaded to Supabase");
 
     // SAVE LOG
     await dbClient.query(
@@ -103,10 +120,17 @@ async function runBackup() {
       [fileName, 'SUCCESS']
     );
 
-    // DELETE LOCAL TEMP FILE
+    console.log("Log inserted");
+
+    // DELETE LOCAL FILE
     fs.unlinkSync(fileName);
 
-    console.log('Backup uploaded successfully');
+    console.log("Backup completed");
+
+    // CLOSE DB
+    await dbClient.end();
+
+    return true;
 
   } catch (err) {
 
@@ -118,7 +142,6 @@ async function runBackup() {
 
 }
 
-// EXPORT
 module.exports = {
   runBackup
 };
